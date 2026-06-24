@@ -50,7 +50,7 @@ def load_map_info(path):
 
 
 class SignalPub:
-    def __init__(self, session, scope, lane_id, light_id, intersection_id, use_bridge_ros2dds=True):
+    def __init__(self, session, scope, lane_id, light_id, intersection_id, use_bridge_ros2dds=True, native=False):
         self.session = session
         self.scope = scope
         self.lane_id = lane_id
@@ -58,8 +58,13 @@ class SignalPub:
         self.intersection_id = intersection_id
         self.use_bridge_ros2dds = use_bridge_ros2dds
 
-        self.prefix = scope if use_bridge_ros2dds else scope + '/*'
-        self.postfix = '' if use_bridge_ros2dds else '/**'
+        # native rmw_zenoh has no namespace, so the key starts at the domain id; jazzy keeps the scope prefix.
+        if use_bridge_ros2dds:
+            self.prefix = scope
+            self.postfix = ''
+        else:
+            self.prefix = '*' if native else scope + '/*'
+            self.postfix = '/**'
 
         # Pose state
         self.pos_lane_id = 0
@@ -175,6 +180,11 @@ def main():
         action='store_true',
         help='Talk to Autoware via rmw_zenoh (default: zenoh-bridge-ros2dds)',
     )
+    parser.add_argument(
+        '--native',
+        action='store_true',
+        help='Native CARLA rmw_zenoh: topics have no namespace, so keys start at the domain id.',
+    )
     default_config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../map_info.json')
     parser.add_argument(
         '--map-info',
@@ -198,7 +208,8 @@ def main():
 
     zenoh.init_log_from_env_or('error')
 
-    config = zenoh.Config()
+    # native loads its session config (multicast off + interface ACL); other modes use the default. -e adds the endpoints to connect to.
+    config = zenoh.Config.from_file(os.environ['ZENOH_SESSION_CONFIG_URI']) if args.native else zenoh.Config()
     if args.connect:
         config.insert_json5('connect/endpoints', json.dumps(args.connect))
 
@@ -211,6 +222,7 @@ def main():
             light_id,
             intersection_id,
             use_bridge_ros2dds=not args.use_rmw_zenoh,
+            native=args.native,
         )
         try:
             while True:
