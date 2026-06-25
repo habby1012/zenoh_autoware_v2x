@@ -55,6 +55,9 @@ class Mode(Enum):
     RMW_ZENOH = 'rmw_zenoh'
     NATIVE = 'native'
 
+    def __str__(self):
+        return self.value
+
 
 class SignalPub:
     def __init__(self, session, scope, lane_id, light_id, intersection_id, mode=Mode.ROS2DDS):
@@ -185,15 +188,11 @@ def main():
     parser = ArgumentParser(prog='v2x_light')
     parser.add_argument('--vehicle', '-v', type=str, default='v1', help='Vehicle ID (used as Zenoh scope)')
     parser.add_argument(
-        '--rmw_zenoh',
-        dest='use_rmw_zenoh',
-        action='store_true',
-        help='Talk to Autoware via rmw_zenoh (default: zenoh-bridge-ros2dds)',
-    )
-    parser.add_argument(
-        '--native',
-        action='store_true',
-        help='Native CARLA rmw_zenoh: topics have no namespace, so keys start at the domain id.',
+        '--mode',
+        type=Mode,
+        choices=list(Mode),
+        default=Mode.ROS2DDS,
+        help='Key layout: ros2dds (zenoh-bridge-ros2dds), rmw_zenoh (jazzy namespace), native (CARLA rmw_zenoh).',
     )
     default_config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../map_info.json')
     parser.add_argument(
@@ -221,13 +220,6 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.native:
-        mode = Mode.NATIVE
-    elif args.use_rmw_zenoh:
-        mode = Mode.RMW_ZENOH
-    else:
-        mode = Mode.ROS2DDS
-
     lane_id, light_id, intersection_id = load_map_info(args.map_info)
 
     zenoh.init_log_from_env_or('error')
@@ -245,7 +237,7 @@ def main():
             lane_id,
             light_id,
             intersection_id,
-            mode=mode,
+            mode=args.mode,
         )
         try:
             while True:
