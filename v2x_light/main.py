@@ -4,6 +4,7 @@ import logging
 import os
 import time
 from argparse import ArgumentParser
+from enum import Enum
 
 import zenoh
 from zenoh import QueryTarget, Reliability
@@ -49,21 +50,30 @@ def load_map_info(path):
     return lanes, lights, sections
 
 
+class Mode(Enum):
+    ROS2DDS = 'ros2dds'
+    RMW_ZENOH = 'rmw_zenoh'
+    NATIVE = 'native'
+
+
 class SignalPub:
-    def __init__(self, session, scope, lane_id, light_id, intersection_id, use_bridge_ros2dds=True, native=False):
+    def __init__(self, session, scope, lane_id, light_id, intersection_id, mode=Mode.ROS2DDS):
         self.session = session
         self.scope = scope
         self.lane_id = lane_id
         self.light_id = light_id
         self.intersection_id = intersection_id
-        self.use_bridge_ros2dds = use_bridge_ros2dds
+        self.mode = mode
 
-        # native rmw_zenoh has no namespace, so the key starts at the domain id; jazzy keeps the scope prefix.
-        if use_bridge_ros2dds:
+        # key format: ros2dds <scope>/<topic>, rmw_zenoh <scope>/<domain>/<topic>, native <domain>/<topic>
+        if mode == Mode.ROS2DDS:
             self.prefix = scope
             self.postfix = ''
+        elif mode == Mode.RMW_ZENOH:
+            self.prefix = scope + '/*'
+            self.postfix = '/**'
         else:
-            self.prefix = '*' if native else scope + '/*'
+            self.prefix = '*'
             self.postfix = '/**'
 
         # Pose state
@@ -85,7 +95,7 @@ class SignalPub:
         # To Autoware
         self.publisher_signal = self.session.declare_publisher(self.prefix + SET_TRAFFIC_SIGNALS_KEY_EXPR + self.postfix)
 
-        if not use_bridge_ros2dds:
+        if mode != Mode.ROS2DDS:
             self.attachment_signal = Attachment()
 
         # To bridge
@@ -157,7 +167,7 @@ class SignalPub:
         msg = TrafficLightGroupArray(stamp=stamp, traffic_light_groups=groups)
         self.publisher_signal.put(
             msg.serialize(),
-            attachment=None if self.use_bridge_ros2dds else self.attachment_signal.serialize(),
+            attachment=None if self.mode == Mode.ROS2DDS else self.attachment_signal.serialize(),
         )
 
     def query_light_status(self, tl_id):
@@ -194,6 +204,13 @@ def main():
         help='Path to map_info.json',
     )
     parser.add_argument(
+        '--config',
+        dest='config',
+        metavar='CONFIG',
+        type=str,
+        help='Path to a Zenoh session config file (native needs multicast off + interface ACL); default is the built-in config.',
+    )
+    parser.add_argument(
         '--connect',
         '-e',
         dest='connect',
@@ -204,12 +221,19 @@ def main():
     )
     args = parser.parse_args()
 
+    if args.native:
+        mode = Mode.NATIVE
+    elif args.use_rmw_zenoh:
+        mode = Mode.RMW_ZENOH
+    else:
+        mode = Mode.ROS2DDS
+
     lane_id, light_id, intersection_id = load_map_info(args.map_info)
 
     zenoh.init_log_from_env_or('error')
 
-    # native loads its session config (multicast off + interface ACL); other modes use the default. -e adds the endpoints to connect to.
-    config = zenoh.Config.from_file(os.environ['ZENOH_SESSION_CONFIG_URI']) if args.native else zenoh.Config()
+    # Load the session config from --config if given; otherwise use the default. -e adds the endpoints to connect to.
+    config = zenoh.Config.from_file(args.config) if args.config else zenoh.Config()
     if args.connect:
         config.insert_json5('connect/endpoints', json.dumps(args.connect))
 
@@ -221,8 +245,7 @@ def main():
             lane_id,
             light_id,
             intersection_id,
-            use_bridge_ros2dds=not args.use_rmw_zenoh,
-            native=args.native,
+            mode=mode,
         )
         try:
             while True:
